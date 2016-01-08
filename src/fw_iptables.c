@@ -52,6 +52,7 @@
 static int iptables_do_command(const char *format, ...);
 static char *iptables_compile(const char *, const char *, const t_firewall_rule *);
 static void iptables_load_ruleset(const char *, const char *, const char *);
+static FILE *iptables_popen(const char *command, const char *type);
 
 /**
 Used to supress the error output of the firewall during destruction */
@@ -514,7 +515,7 @@ iptables_fw_destroy_mention(const char *table, const char *chain, const char *me
     safe_asprintf(&command, "iptables -t %s -L %s -n --line-numbers -v", table, chain);
     iptables_insert_gateway_id(&command);
 
-    if ((p = popen(command, "r"))) {
+    if ((p = iptables_popen(command, "r"))) {
         /* Skip first 2 lines */
         while (!feof(p) && fgetc(p) != '\n') ;
         while (!feof(p) && fgetc(p) != '\n') ;
@@ -536,7 +537,7 @@ iptables_fw_destroy_mention(const char *table, const char *chain, const char *me
                 }
             }
         }
-        pclose(p);
+        fclose(p);
     }
 
     free(command);
@@ -637,10 +638,10 @@ iptables_fw_counters_update(void)
     /* Look for outgoing traffic */
     safe_asprintf(&script, "%s %s", "iptables", "-v -n -x -t mangle -L " CHAIN_OUTGOING);
     iptables_insert_gateway_id(&script);
-    output = popen(script, "r");
+    output = iptables_popen(script, "r");
     free(script);
     if (!output) {
-        debug(LOG_ERR, "popen(): %s", strerror(errno));
+        debug(LOG_ERR, "iptables_popen(): %s", strerror(errno));
         return -1;
     }
 
@@ -678,15 +679,15 @@ iptables_fw_counters_update(void)
             UNLOCK_CLIENT_LIST();
         }
     }
-    pclose(output);
+    fclose(output);
 
     /* Look for incoming traffic */
     safe_asprintf(&script, "%s %s", "iptables", "-v -n -x -t mangle -L " CHAIN_INCOMING);
     iptables_insert_gateway_id(&script);
-    output = popen(script, "r");
+    output = iptables_popen(script, "r");
     free(script);
     if (!output) {
-        debug(LOG_ERR, "popen(): %s", strerror(errno));
+        debug(LOG_ERR, "iptables_popen(): %s", strerror(errno));
         return -1;
     }
 
@@ -721,7 +722,60 @@ iptables_fw_counters_update(void)
             UNLOCK_CLIENT_LIST();
         }
     }
-    pclose(output);
+    fclose(output);
 
     return 1;
+}
+
+static FILE *
+iptables_popen(const char *command, const char *type)
+{
+    int pipefd[2];
+    int pid_t;
+
+    if(type !='r' && type != 'w')
+    {
+        printf("iptables_popen() flag error/n");
+        return NULL;
+    }
+
+    if(pipe(pipefd)<0)
+    {
+        printf("iptables_popen() pipe create error/n");
+        return NULL;
+    }
+    
+    pid_t=fork();
+
+    if(pid_t < 0) 
+        return NULL;
+
+    if(0 == pid_t)
+    {
+        if(type == 'r')
+        {
+            close(pipefd[0]);
+            dup2(pipefd[1],STDOUT_FILENO);
+            close(pipefd[1]);		
+
+        }
+        else{
+            close(pipefd[1]);
+            dup2(pipefd[0],STDIN_FILENO);
+            close(pipefd[0]);
+        }
+        char *argv[] = {command,NULL};	
+        if(execvp(command,argv)<0)
+            return NULL;	
+    }
+    
+    wait(0);
+
+    if(type=='r'){
+        close(pipefd[1]);
+        return fdopen(pipefd[0],"r");
+    }else{
+        close(pipefd[0]);
+        return fdopen(pipefd[1],"w");
+    }
 }
